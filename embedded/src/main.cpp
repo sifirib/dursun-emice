@@ -1,9 +1,9 @@
 #include <Arduino.h>
 
-#include "api_client.h"
+#include "conversation_controller.h"
 #include "wifi_manager.h"
 
-ApiClient api_client;
+ConversationController controller;
 WifiManager wifi_manager;
 
 void setup()
@@ -12,26 +12,12 @@ void setup()
 
     wifi_manager.begin();
 
-    if (api_client.health())
-    {
-        Serial.println("Server ulasilabilir.");
-    }
-    else
-    {
-        Serial.println("Server ulasilamiyor.");
-    }
+    controller.begin();
 }
 
 void loop()
 {
-    delay(30000);
+    wifi_manager.update();
 
-    if (api_client.health())
-    {
-        Serial.println("Health OK");
-    }
-    else
-    {
-        Serial.println("Health FAILED");
-    }
+    controller.update();
 }

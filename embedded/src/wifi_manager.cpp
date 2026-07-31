@@ -4,32 +4,33 @@
 
 #include "config.h"
 
-bool WifiManager::begin()
+void WifiManager::begin()
 {
-    WiFi.mode(WIFI_STA);
-
-    WiFi.begin(
-        WIFI_SSID,
-        WIFI_PASSWORD
-    );
-
-    Serial.print("WiFi baglaniyor");
-
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        Serial.print(".");
-        delay(500);
-    }
-
-    Serial.println();
-    Serial.println("WiFi baglandi.");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-
-    return true;
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
-bool WifiManager::is_connected()
+void WifiManager::update()
 {
-    return WiFi.status() == WL_CONNECTED;
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        return;
+    }
+
+    reconnect();
+}
+
+void WifiManager::reconnect()
+{
+    static uint32_t last_attempt = 0;
+
+    if (millis() - last_attempt < 5000)
+    {
+        return;
+    }
+
+    last_attempt = millis();
+
+    WiFi.disconnect();
+
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }

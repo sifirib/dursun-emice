@@ -3,6 +3,10 @@
 class WifiManager
 {
 public:
-    bool begin();
-    bool is_connected();
+    void begin();
+
+    void update();
+
+private:
+    void reconnect();
 };
