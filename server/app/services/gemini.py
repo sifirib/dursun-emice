@@ -2,7 +2,7 @@ import base64
 
 import httpx
 
-from app.config import GEMINI_API_KEY, MODEL_NAME
+from app.config import GEMINI_API_KEY, MODEL_NAME, HTTP_TIMEOUT
 from app.models import ChatResponse
 from app.prompt import SYSTEM_PROMPT, STYLE_PROMPT, USER_PROMPT
 
@@ -49,7 +49,7 @@ class GeminiService:
 
         try:
 
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
 
                 response = await client.post(
                     self.url,
