@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-requests
+httpx
 edge-tts
 python-multipart
 python-dotenv
