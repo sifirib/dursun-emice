@@ -17,6 +17,13 @@ async def home():
         "status": "ok"
     }
 
+@app.get("/health")
+async def health():
+
+    return {
+        "status": "ok"
+    }
+
 
 @app.post("/chat")
 async def chat(audio: UploadFile = File(...)):
