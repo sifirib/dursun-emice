@@ -6,3 +6,5 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MODEL_NAME = "gemini-2.5-flash"
+TTS_VOICE = "tr-TR-AhmetNeural"
+HTTP_TIMEOUT = 60

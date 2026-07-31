@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import PlainTextResponse
 
-from app.gemini import GeminiService
+from server.app.services.gemini import GeminiService
 
 app = FastAPI()
 
