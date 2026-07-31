@@ -1,23 +1,31 @@
 import base64
 
-import httpx
+import requests
 
 from app.config import GEMINI_API_KEY, MODEL_NAME, HTTP_TIMEOUT
-from app.models import ChatResponse
-from app.prompt import SYSTEM_PROMPT, STYLE_PROMPT, USER_PROMPT
+from app.prompt import SYSTEM_PROMPT, USER_PROMPT, STYLE_PROMPT
 
 
 class GeminiService:
 
     def __init__(self):
+
         self.url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
         )
 
-    async def chat(self, audio_bytes: bytes) -> ChatResponse:
+        self.headers = {
+            "Content-Type": "application/json"
+        }
 
-        base64_audio = base64.b64encode(audio_bytes).decode()
+    async def chat(
+        self,
+        audio_bytes: bytes,
+        mime_type: str
+    ) -> str:
+
+        base64_audio = base64.b64encode(audio_bytes).decode("utf-8")
 
         payload = {
             "systemInstruction": {
@@ -32,7 +40,7 @@ class GeminiService:
                     "parts": [
                         {
                             "inlineData": {
-                                "mimeType": "audio/wav",
+                                "mimeType": mime_type,
                                 "data": base64_audio
                             }
                         },
@@ -47,44 +55,31 @@ class GeminiService:
             ]
         }
 
+        response = requests.post(
+            self.url,
+            headers=self.headers,
+            json=payload,
+            timeout=HTTP_TIMEOUT
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Gemini API hatası ({response.status_code})"
+            )
+
         try:
 
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            result = response.json()
 
-                response = await client.post(
-                    self.url,
-                    headers={
-                        "Content-Type": "application/json"
-                    },
-                    json=payload
-                )
-
-            response.raise_for_status()
-
-            data = response.json()
-
-            text = (
-                data["candidates"][0]
+            return (
+                result["candidates"][0]
                 ["content"]["parts"][0]
                 ["text"]
                 .strip()
             )
 
-            return ChatResponse(
-                success=True,
-                text=text
-            )
-
-        except httpx.HTTPError:
-
-            return ChatResponse(
-                success=False,
-                text="He ya... bugün kafam biraz dalgın galiba evlat."
-            )
-
         except (KeyError, IndexError):
 
-            return ChatResponse(
-                success=False,
-                text="Ula evlat, bir an aklım dağıldı. Bir daha söyler misin?"
+            raise RuntimeError(
+                "Gemini beklenmeyen bir cevap döndürdü."
             )

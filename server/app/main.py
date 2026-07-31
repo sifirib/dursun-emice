@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from app.services.gemini import GeminiService
@@ -9,8 +9,10 @@ app = FastAPI()
 gemini = GeminiService()
 tts = TTSService()
 
+
 @app.get("/")
 async def home():
+
     return {
         "status": "ok"
     }
@@ -18,15 +20,29 @@ async def home():
 
 @app.post("/chat")
 async def chat(audio: UploadFile = File(...)):
-    audio_bytes = await audio.read()
-    response = await gemini.chat(audio_bytes)
 
-    if not response.success:
-        return response
+    try:
 
-    audio = await tts.speak(response.text)
+        audio_bytes = await audio.read()
 
-    return Response(
-        content=audio,
-        media_type="audio/mpeg"
-    )
+        text = await gemini.chat(
+            audio_bytes=audio_bytes,
+            mime_type=audio.content_type
+        )
+
+        mp3 = await tts.speak(text)
+
+        return Response(
+            content=mp3,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": 'inline; filename="response.mp3"'
+            }
+        )
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=502,
+            detail=str(e)
+        )
