@@ -1,27 +1,15 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import PlainTextResponse
 
-app = FastAPI(
-    title="Dursun Emice API",
-    version="0.1.0"
-)
+from app.gemini import GeminiService
 
-
-@app.get("/")
-async def home():
-    return {
-        "status": "ok",
-        "message": "Dursun Emice API çalışıyor."
-    }
-
-
-@app.get("/health")
-async def health():
-    return {
-        "status": "healthy"
-    }
-
+app = FastAPI()
+gemini = GeminiService()
 
 @app.post("/chat")
 async def chat(audio: UploadFile = File(...)):
-    return PlainTextResponse("Dursun Emice burada.")
+    audio_bytes = await audio.read()
+
+    response = gemini.chat(audio_bytes)
+
+    return PlainTextResponse(response)
