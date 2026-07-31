@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import PlainTextResponse
 
 app = FastAPI(
     title="Dursun Emice API",
@@ -19,3 +20,8 @@ async def health():
     return {
         "status": "healthy"
     }
+
+
+@app.post("/chat")
+async def chat(audio: UploadFile = File(...)):
+    return PlainTextResponse("Dursun Emice burada.")
