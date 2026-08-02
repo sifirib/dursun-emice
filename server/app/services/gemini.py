@@ -1,6 +1,6 @@
 import base64
 
-import requests
+import httpx
 
 from app.config import GEMINI_API_KEY, MODEL_NAME, HTTP_TIMEOUT
 from app.prompt import SYSTEM_PROMPT, USER_PROMPT, STYLE_PROMPT
@@ -55,17 +55,27 @@ class GeminiService:
             ]
         }
 
-        response = requests.post(
-            self.url,
-            headers=self.headers,
-            json=payload,
-            timeout=HTTP_TIMEOUT
-        )
+        # NOT: onceki halde burada senkron "requests.post()" kullaniliyordu.
+        # Bu fonksiyon "async def" olsa da requests bloklayici oldugu icin
+        # Gemini cevap verene kadar (1-3+ saniye) FastAPI'nin tek event
+        # loop'u tamamen kilitleniyor, o sirada gelen baska hicbir istege
+        # (orn. Render'in kendi health check'i ya da ikinci bir /chat_raw)
+        # cevap verilemiyordu. httpx.AsyncClient gercek async calisir.
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as async_client:
+
+            response = await async_client.post(
+                self.url,
+                headers=self.headers,
+                json=payload
+            )
 
         if response.status_code != 200:
+
+            print(response.text)
+
             raise RuntimeError(
-                f"Gemini API hatası ({response.status_code})"
-            )
+                f"Gemini API hatası ({response.status_code}):\n{response.text}"
+                )
 
         try:
 

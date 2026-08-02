@@ -30,7 +30,7 @@ async def process_audio(
     audio_bytes: bytes,
     mime_type: str
 ) -> Response:
-
+    
     text = await gemini.chat(
         audio_bytes=audio_bytes,
         mime_type=mime_type
