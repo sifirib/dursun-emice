@@ -31,6 +31,5 @@ void WifiManager::reconnect()
     last_attempt = millis();
 
     WiFi.disconnect();
-
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
