@@ -56,10 +56,20 @@ void ConversationController::enter_idle()
 
 void ConversationController::update_idle()
 {
-    if (millis() < cooldown_until_ms_)
+    // NOT: "millis() < cooldown_until_ms_" yerine cikarma tabanli
+    // karsilastirma kullaniyoruz; millis() ~49.7 gunde bir tasar
+    // (overflow), dogrudan karsilastirma o anda cooldown'u yanlis
+    // degerlendirebilirdi. Cikarma + isaretli tur, tasmada da dogru sonuc verir.
+    if (static_cast<int32_t>(millis() - cooldown_until_ms_) < 0)
     {
         return;
     }
+
+    // Cooldown_until_ms_'i "guncel" tutmak icin burada da simdiki zamana
+    // esitliyoruz. Aksi halde haftalarca kimse gelmezse (cooldown_until_ms_
+    // hic tazelenmez) millis() 24.8 gunu gectiginde yukaridaki karsilastirma
+    // (isaretli tur nedeniyle) yanlis sonuc vermeye baslar.
+    cooldown_until_ms_ = millis();
 
     if (WiFi.status() != WL_CONNECTED)
     {
@@ -78,7 +88,12 @@ void ConversationController::enter_greeting()
 {
     if (!player_.play_file("/greeting.mp3"))
     {
+        // Cooldown olmadan idle'a donersek, kisi hala <50cm oldugu icin
+        // bir sonraki update() tik'inde ayni hata sonsuza kadar tekrar
+        // dener (siki dongu). Diger hata yollariyla tutarli olsun diye
+        // burada da cooldown koyuyoruz.
         Serial.println("HATA: greeting.mp3 calinamadi (LittleFS'e yuklendi mi?).");
+        cooldown_until_ms_ = millis() + COOLDOWN_AFTER_ERROR_MS;
         change_state(conversation_state::idle);
     }
 }

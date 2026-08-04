@@ -26,6 +26,8 @@ public:
     void begin();
     void update();
 
+    conversation_state get_state() const { return current_state; }
+
 private:
     conversation_state current_state = conversation_state::idle;
 

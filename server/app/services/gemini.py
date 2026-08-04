@@ -70,9 +70,6 @@ class GeminiService:
             )
 
         if response.status_code != 200:
-
-            print(response.text)
-
             raise RuntimeError(
                 f"Gemini API hatası ({response.status_code}):\n{response.text}"
                 )
