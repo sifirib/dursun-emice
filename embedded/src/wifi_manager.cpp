@@ -1,17 +1,64 @@
 #include "wifi_manager.h"
 
+#include <Arduino.h>
 #include <WiFi.h>
 
 #include "config.h"
 
 void WifiManager::begin()
 {
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.persistent(false);
+
+    Serial.println("WiFi baglaniliyor...");
+
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    const uint32_t start_time = millis();
+
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        if (millis() - start_time >= 15000)
+        {
+            Serial.println("WiFi baglantisi zaman asimina ugradi.");
+            return;
+        }
+
+        delay(250);
+        Serial.print(".");
+    }
+
+    Serial.println();
+    Serial.println("WiFi baglandi.");
+
+    const uint32_t ip_wait_start = millis();
+
+    while (WiFi.localIP() == IPAddress(0, 0, 0, 0))
+    {
+        if (millis() - ip_wait_start >= 5000)
+        {
+            Serial.println("DHCP IP alinamadi.");
+            return;
+        }
+
+        delay(100);
+    }
+
+    Serial.print("ESP IP: ");
+    Serial.println(WiFi.localIP());
+
+    Serial.print("Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+
+    Serial.print("RSSI: ");
+    Serial.println(WiFi.RSSI());
 }
 
 void WifiManager::update()
 {
-    if (WiFi.status() == WL_CONNECTED)
+    if (WiFi.status() == WL_CONNECTED &&
+        WiFi.localIP() != IPAddress(0, 0, 0, 0))
     {
         return;
     }
@@ -29,6 +76,8 @@ void WifiManager::reconnect()
     }
 
     last_attempt = millis();
+
+    Serial.println("WiFi yeniden baglaniliyor...");
 
     WiFi.disconnect();
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
