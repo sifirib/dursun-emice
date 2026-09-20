@@ -296,6 +296,16 @@ void ConversationController::update_idle()
 
 void ConversationController::enter_greeting()
 {
+    // Mikrofon + AFE + VADNet sicak kalir; Recorder algilamayi
+    // DISARM eder. Boylece greeting sirasindaki VAD sonuclari
+    // kayit baslatamaz.
+    if (!recorder_.pause_detection())
+    {
+        Serial.println(
+            "HATA: Greeting oncesi algilama durdurulamadi."
+        );
+    }
+
     Serial.println(
         "[GREETING] Karsilama sesi caliyor..."
     );
@@ -696,6 +706,15 @@ void ConversationController::update_waiting_server()
 
 void ConversationController::enter_playing_response()
 {
+    // Dursun kendi TTS cevabini calarken Recorder DISARM edilir.
+    // AFE pipeline sicak kalir; playback VAD sonucu kayda donusemez.
+    if (!recorder_.pause_detection())
+    {
+        Serial.println(
+            "HATA: Response oncesi algilama durdurulamadi."
+        );
+    }
+
     Serial.println(
         "[RESPONSE] Dursun Emice konusuyor..."
     );

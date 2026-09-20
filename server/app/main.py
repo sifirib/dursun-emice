@@ -7,7 +7,6 @@ from fastapi import (
     Request,
     UploadFile,
 )
-
 from fastapi.responses import Response
 
 from app.services.gemini import GeminiService
@@ -22,7 +21,6 @@ tts = TTSService()
 
 @app.get("/")
 async def home():
-
     return {
         "status": "ok"
     }
@@ -30,7 +28,6 @@ async def home():
 
 @app.get("/health")
 async def health():
-
     return {
         "status": "ok"
     }
@@ -52,7 +49,6 @@ async def process_audio(
     )
 
     try:
-
         print(
             "[CHAT] Gemini basliyor..."
         )
@@ -67,13 +63,11 @@ async def process_audio(
         )
 
     except Exception as exc:
-
         raise RuntimeError(
             f"GEMINI: {exc}"
         ) from exc
 
     try:
-
         print(
             "[CHAT] TTS basliyor..."
         )
@@ -88,7 +82,6 @@ async def process_audio(
         )
 
     except Exception as exc:
-
         raise RuntimeError(
             f"TTS: {exc}"
         ) from exc
@@ -109,7 +102,6 @@ async def chat(
 ):
 
     try:
-
         audio_bytes = await audio.read()
 
         return await process_audio(
@@ -118,7 +110,6 @@ async def chat(
         )
 
     except Exception as exc:
-
         print(
             "[CHAT] HATA:"
         )
@@ -139,8 +130,12 @@ async def chat_raw(
 ):
 
     try:
-
         audio_bytes = await request.body()
+
+        if not audio_bytes:
+            raise RuntimeError(
+                "ESP32'den bos WAV geldi."
+            )
 
         return await process_audio(
             audio_bytes=audio_bytes,
@@ -148,7 +143,6 @@ async def chat_raw(
         )
 
     except Exception as exc:
-
         print(
             "[CHAT_RAW] HATA:"
         )

@@ -1,4 +1,6 @@
 .pio/
+.tmp/
+managed_components/
 
 include/secrets.h
 
