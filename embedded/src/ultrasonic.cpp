@@ -141,7 +141,7 @@ void Ultrasonic::update()
             far_sample_count_ = 0;
 
             Serial.println(
-                "[ULTRASONIC] Kisi ayrildi."
+                "[ULTRASONIC] Kisi menzilden cikti."
             );
         }
     }

@@ -14,6 +14,7 @@ bool Recorder::begin()
     free_resources();
 
     state_.store(recorder_state::idle);
+    manual_speech_seen_.store(false);
 
     session_mutex_ = xSemaphoreCreateMutex();
     if (session_mutex_ == nullptr)
@@ -89,11 +90,9 @@ bool Recorder::start_listening()
     }
 
     reset_session();
+    capture_mode_ = capture_mode::automatic_vad;
 
-    // AFE/NSNet2/VADNet surekli calisir ve fetch task'i sonucu
-    // surekli bosaltir. Greeting/TTS sirasinda Recorder IDLE oldugu
-    // icin bu sonuclar tamamen yok sayilir. Dinlemeye gecerken
-    // sadece VAD'in onceki playback durumunu temizliyoruz.
+    // Stage 2.1'de donanimda calistigi dogrulanan otomatik yol aynen korunur.
     if (!speech_frontend_.reset_vad())
     {
         xSemaphoreGive(session_mutex_);
@@ -109,6 +108,86 @@ bool Recorder::start_listening()
     return true;
 }
 
+bool Recorder::start_manual_recording()
+{
+    if (!initialized_ || session_mutex_ == nullptr)
+    {
+        return false;
+    }
+
+    if (xSemaphoreTake(session_mutex_, pdMS_TO_TICKS(100)) != pdTRUE)
+    {
+        return false;
+    }
+
+    const recorder_state current = state_.load();
+    if (
+        current == recorder_state::waiting_for_speech ||
+        current == recorder_state::recording
+    )
+    {
+        xSemaphoreGive(session_mutex_);
+        return false;
+    }
+
+    reset_session();
+    capture_mode_ = capture_mode::manual;
+    manual_speech_seen_.store(false);
+
+    // Manuel mod VAD kararina bagli degil. Reset sadece greeting/TTS'den
+    // kalan VAD state'ini temiz tutar; basarisiz olsa bile manuel kayit devam eder.
+    if (!speech_frontend_.reset_vad())
+    {
+        Serial.println("UYARI: Manuel kayit basinda VAD reset basarisiz.");
+    }
+
+    recording_started_ms_ = millis();
+    state_.store(recorder_state::recording);
+
+    xSemaphoreGive(session_mutex_);
+
+    Serial.println();
+    Serial.println(">>> MANUEL KAYIT BASLADI");
+    return true;
+}
+
+bool Recorder::finish_manual_recording()
+{
+    if (!initialized_ || session_mutex_ == nullptr)
+    {
+        return false;
+    }
+
+    if (xSemaphoreTake(session_mutex_, pdMS_TO_TICKS(100)) != pdTRUE)
+    {
+        return false;
+    }
+
+    const recorder_state current = state_.load();
+
+    // Maksimum sure veya buffer dolmasi kaydi daha once bitirmis olabilir.
+    if (current == recorder_state::ready)
+    {
+        xSemaphoreGive(session_mutex_);
+        return true;
+    }
+
+    if (
+        current != recorder_state::recording ||
+        capture_mode_ != capture_mode::manual
+    )
+    {
+        xSemaphoreGive(session_mutex_);
+        return false;
+    }
+
+    finish_recording();
+    const bool ready = state_.load() == recorder_state::ready;
+
+    xSemaphoreGive(session_mutex_);
+    return ready;
+}
+
 bool Recorder::pause_detection()
 {
     if (!initialized_ || session_mutex_ == nullptr)
@@ -121,10 +200,8 @@ bool Recorder::pause_detection()
         return false;
     }
 
-    // AFE/NSNet2/VADNet arka planda sicak kalir. Ancak Recorder IDLE
-    // oldugu icin callback'ten gelen tum VAD sonuclari yok sayilir;
-    // greeting veya Dursun'un TTS sesi kayit baslatamaz.
     state_.store(recorder_state::idle);
+    capture_mode_ = capture_mode::automatic_vad;
     reset_session();
 
     xSemaphoreGive(session_mutex_);
@@ -151,6 +228,7 @@ void Recorder::stop()
     if (xSemaphoreTake(session_mutex_, pdMS_TO_TICKS(100)) == pdTRUE)
     {
         state_.store(recorder_state::idle);
+        capture_mode_ = capture_mode::automatic_vad;
         reset_session();
         xSemaphoreGive(session_mutex_);
     }
@@ -219,12 +297,12 @@ void Recorder::handle_frontend_result(const SpeechFrame& frame)
 
     if (locked_state == recorder_state::waiting_for_speech)
     {
-        // ESP-SR cache kullanilamazsa eski davranisi koruyan yedek pre-roll.
+        // Otomatik VAD yolu Stage 2.1 ile ayni.
         wav_buffer_.push_pre_roll(frame.samples, frame.sample_count);
 
         if (frame.speech)
         {
-            begin_recording(frame);
+            begin_automatic_recording(frame);
         }
 
         xSemaphoreGive(session_mutex_);
@@ -233,13 +311,27 @@ void Recorder::handle_frontend_result(const SpeechFrame& frame)
 
     if (locked_state == recorder_state::recording)
     {
+        if (
+            capture_mode_ == capture_mode::manual &&
+            frame.speech
+        )
+        {
+            manual_speech_seen_.store(true);
+        }
+
         wav_buffer_.append(frame.samples, frame.sample_count);
 
         const uint32_t elapsed_ms = millis() - recording_started_ms_;
         const bool max_duration = elapsed_ms >= MAX_RECORD_DURATION_MS;
-        const bool speech_finished = !frame.speech;
+        const bool automatic_speech_finished =
+            capture_mode_ == capture_mode::automatic_vad &&
+            !frame.speech;
 
-        if (wav_buffer_.full() || max_duration || speech_finished)
+        if (
+            wav_buffer_.full() ||
+            max_duration ||
+            automatic_speech_finished
+        )
         {
             finish_recording();
         }
@@ -248,7 +340,7 @@ void Recorder::handle_frontend_result(const SpeechFrame& frame)
     xSemaphoreGive(session_mutex_);
 }
 
-void Recorder::begin_recording(const SpeechFrame& frame)
+void Recorder::begin_automatic_recording(const SpeechFrame& frame)
 {
     const bool has_afe_prefix =
         frame.speech_prefix != nullptr &&
@@ -256,7 +348,6 @@ void Recorder::begin_recording(const SpeechFrame& frame)
 
     if (has_afe_prefix)
     {
-        // Espressif'in tarif ettigi sirayla: VAD cache once, mevcut frame sonra.
         wav_buffer_.append(
             frame.speech_prefix,
             frame.speech_prefix_sample_count
@@ -265,10 +356,10 @@ void Recorder::begin_recording(const SpeechFrame& frame)
     }
     else
     {
-        // Current frame zaten pre-roll'a push edildi; burada tekrar eklenmez.
         wav_buffer_.append_pre_roll();
     }
 
+    capture_mode_ = capture_mode::automatic_vad;
     recording_started_ms_ = millis();
     state_.store(recorder_state::recording);
 
@@ -281,14 +372,35 @@ void Recorder::finish_recording()
 {
     if (wav_buffer_.pcm_bytes() == 0)
     {
-        state_.store(recorder_state::waiting_for_speech);
+        if (capture_mode_ == capture_mode::automatic_vad)
+        {
+            state_.store(recorder_state::waiting_for_speech);
+        }
+        else
+        {
+            state_.store(recorder_state::idle);
+        }
+
+        return;
+    }
+
+    if (
+        capture_mode_ == capture_mode::manual &&
+        PTT_REQUIRE_VAD_SPEECH &&
+        !manual_speech_seen_.load()
+    )
+    {
+        wav_buffer_.reset();
+        state_.store(recorder_state::idle);
+
+        Serial.println("[BAS-KONUS] Konusma algilanmadi; kayit atildi.");
         return;
     }
 
     wav_buffer_.finalize();
     state_.store(recorder_state::ready);
 
-    Serial.println("<<< KONUSMA BITTI");
+    Serial.println("<<< KAYIT BITTI");
     Serial.print("WAV: ");
     Serial.print(wav_buffer_.size());
     Serial.println(" byte");
@@ -298,14 +410,15 @@ void Recorder::reset_session()
 {
     wav_buffer_.reset();
     recording_started_ms_ = 0;
+    manual_speech_seen_.store(false);
 }
 
 void Recorder::free_resources()
 {
     initialized_ = false;
     state_.store(recorder_state::idle);
+    capture_mode_ = capture_mode::automatic_vad;
 
-    // Callback kullanabilecek task'lar tamamen durmadan mutex/buffer yok edilmez.
     speech_frontend_.end();
     audio_input_.end();
 

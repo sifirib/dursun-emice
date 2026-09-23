@@ -28,7 +28,16 @@ public:
     static constexpr uint16_t CHANNELS = AUDIO_CHANNELS;
 
     bool begin();
+
+    // Mevcut otomatik ESP-SR/VAD yolu. Gelecek butonsuz surum icin
+    // oldugu gibi korunur.
     bool start_listening();
+
+    // Manuel kayit kapisi. V1 bas-konuş bunu kullanir; VAD kaydi
+    // baslatmaz veya bitirmez, fakat AFE/NSNet2/VADNet calismaya devam eder.
+    bool start_manual_recording();
+    bool finish_manual_recording();
+
     bool pause_detection();
     void update();
     void stop();
@@ -37,6 +46,11 @@ public:
     bool is_recording() const;
     bool has_recording() const;
     recorder_state state() const;
+
+    bool manual_speech_detected() const
+    {
+        return manual_speech_seen_.load();
+    }
 
     const uint8_t* wav_data() const
     {
@@ -51,13 +65,19 @@ public:
     ~Recorder();
 
 private:
+    enum class capture_mode : uint8_t
+    {
+        automatic_vad,
+        manual
+    };
+
     static void frontend_result_entry(
         const SpeechFrame& frame,
         void* context
     );
 
     void handle_frontend_result(const SpeechFrame& frame);
-    void begin_recording(const SpeechFrame& frame);
+    void begin_automatic_recording(const SpeechFrame& frame);
     void finish_recording();
     void reset_session();
     void free_resources();
@@ -72,6 +92,9 @@ private:
         recorder_state::idle
     };
 
+    capture_mode capture_mode_ = capture_mode::automatic_vad;
     uint32_t recording_started_ms_ = 0;
+
+    std::atomic<bool> manual_speech_seen_ { false };
     bool initialized_ = false;
 };

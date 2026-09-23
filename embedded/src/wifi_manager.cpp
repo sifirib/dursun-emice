@@ -12,14 +12,13 @@ void WifiManager::begin()
     WiFi.persistent(false);
 
     Serial.println("WiFi baglaniliyor...");
-
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     const uint32_t start_time = millis();
 
     while (WiFi.status() != WL_CONNECTED)
     {
-        if (millis() - start_time >= 15000)
+        if (millis() - start_time >= WIFI_CONNECT_TIMEOUT_MS)
         {
             Serial.println("WiFi baglantisi zaman asimina ugradi.");
             return;
@@ -36,7 +35,7 @@ void WifiManager::begin()
 
     while (WiFi.localIP() == IPAddress(0, 0, 0, 0))
     {
-        if (millis() - ip_wait_start >= 5000)
+        if (millis() - ip_wait_start >= WIFI_IP_TIMEOUT_MS)
         {
             Serial.println("DHCP IP alinamadi.");
             return;
@@ -47,18 +46,18 @@ void WifiManager::begin()
 
     Serial.print("ESP IP: ");
     Serial.println(WiFi.localIP());
-
     Serial.print("Gateway: ");
     Serial.println(WiFi.gatewayIP());
-
     Serial.print("RSSI: ");
     Serial.println(WiFi.RSSI());
 }
 
 void WifiManager::update()
 {
-    if (WiFi.status() == WL_CONNECTED &&
-        WiFi.localIP() != IPAddress(0, 0, 0, 0))
+    if (
+        WiFi.status() == WL_CONNECTED &&
+        WiFi.localIP() != IPAddress(0, 0, 0, 0)
+    )
     {
         return;
     }
@@ -68,14 +67,14 @@ void WifiManager::update()
 
 void WifiManager::reconnect()
 {
-    static uint32_t last_attempt = 0;
+    static uint32_t last_attempt_ms = 0;
 
-    if (millis() - last_attempt < 5000)
+    if (millis() - last_attempt_ms < WIFI_RECONNECT_INTERVAL_MS)
     {
         return;
     }
 
-    last_attempt = millis();
+    last_attempt_ms = millis();
 
     Serial.println("WiFi yeniden baglaniliyor...");
 

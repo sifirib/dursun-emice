@@ -4,7 +4,6 @@ class WifiManager
 {
 public:
     void begin();
-
     void update();
 
 private:

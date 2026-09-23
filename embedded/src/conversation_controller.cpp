@@ -8,68 +8,61 @@
 
 #include "config.h"
 
-
 namespace
 {
-    constexpr char GREETING_MP3_PATH[] =
-        "/greeting.mp3";
-
-    constexpr size_t DOWNLOAD_BUFFER_SIZE =
-        4096;
+    constexpr char GREETING_MP3_PATH[] = "/greeting.mp3";
+    constexpr size_t DOWNLOAD_BUFFER_SIZE = 4096;
 }
-
 
 ConversationController::~ConversationController()
 {
     player_.stop();
-
+    recorder_.stop();
     chat_api_client_.end_chat();
-
     free_response_audio();
 }
-
 
 bool ConversationController::begin()
 {
     ultrasonic_.begin();
 
+    if (INTERACTION_MODE == interaction_mode::push_to_talk)
+    {
+        talk_button_.begin();
+    }
+
     if (!recorder_.begin())
     {
-        Serial.println(
-            "HATA: Recorder baslatilamadi."
-        );
-
+        Serial.println("HATA: Recorder baslatilamadi.");
         return false;
     }
 
     player_.begin();
 
-    if (
-        !LittleFS.exists(
-            GREETING_MP3_PATH
-        )
-    )
+    if (!LittleFS.exists(GREETING_MP3_PATH))
     {
-        Serial.println(
-            "HATA: /greeting.mp3 bulunamadi."
-        );
-
+        Serial.println("HATA: /greeting.mp3 bulunamadi.");
         return false;
     }
 
     initialized_ = true;
+    ultrasonic_armed_ = !ultrasonic_.person_present();
 
-    change_state(
-        conversation_state::idle
-    );
+    change_state(conversation_state::idle);
 
-    Serial.println(
-        "ConversationController: OK"
-    );
+    Serial.println("ConversationController: OK");
+
+    if (INTERACTION_MODE == interaction_mode::push_to_talk)
+    {
+        Serial.println("Interaction mode: BASILI TUT VE KONUS");
+    }
+    else
+    {
+        Serial.println("Interaction mode: AUTOMATIC VAD");
+    }
 
     return true;
 }
-
 
 void ConversationController::update()
 {
@@ -78,19 +71,15 @@ void ConversationController::update()
         return;
     }
 
-    /*
-     * HC-SR04'u surekli fakat kontrollu
-     * araliklarla guncelle.
-     */
     ultrasonic_.update();
 
-    /*
-     * Keep-alive sadece aktif bir sohbet
-     * yokken calissin.
-     */
+    if (INTERACTION_MODE == interaction_mode::push_to_talk)
+    {
+        talk_button_.update();
+    }
+
     if (
-        current_state ==
-            conversation_state::idle &&
+        current_state == conversation_state::idle &&
         !session_active_ &&
         !ultrasonic_.person_present() &&
         WiFi.status() == WL_CONNECTED
@@ -109,8 +98,20 @@ void ConversationController::update()
             update_greeting();
             break;
 
+        case conversation_state::waiting_button:
+            update_waiting_button();
+            break;
+
         case conversation_state::listening:
             update_listening();
+            break;
+
+        case conversation_state::manual_recording:
+            update_manual_recording();
+            break;
+
+        case conversation_state::release_tail:
+            update_release_tail();
             break;
 
         case conversation_state::waiting_server:
@@ -123,12 +124,10 @@ void ConversationController::update()
     }
 }
 
-
-void ConversationController::change_state(
-    conversation_state state
-)
+void ConversationController::change_state(conversation_state state)
 {
     current_state = state;
+    state_started_ms_ = millis();
 
     switch (state)
     {
@@ -140,8 +139,20 @@ void ConversationController::change_state(
             enter_greeting();
             break;
 
+        case conversation_state::waiting_button:
+            enter_waiting_button();
+            break;
+
         case conversation_state::listening:
             enter_listening();
+            break;
+
+        case conversation_state::manual_recording:
+            enter_manual_recording();
+            break;
+
+        case conversation_state::release_tail:
+            enter_release_tail();
             break;
 
         case conversation_state::waiting_server:
@@ -154,15 +165,11 @@ void ConversationController::change_state(
     }
 }
 
-
-void ConversationController::start_cooldown(
-    uint32_t duration_ms
-)
+void ConversationController::start_cooldown(uint32_t duration_ms)
 {
     cooldown_started_ms_ = millis();
     cooldown_duration_ms_ = duration_ms;
 }
-
 
 bool ConversationController::cooldown_active()
 {
@@ -171,51 +178,39 @@ bool ConversationController::cooldown_active()
         return false;
     }
 
-    if (
-        millis() - cooldown_started_ms_ >=
-        cooldown_duration_ms_
-    )
+    if (millis() - cooldown_started_ms_ >= cooldown_duration_ms_)
     {
         cooldown_duration_ms_ = 0;
-
         return false;
     }
 
     return true;
 }
 
-
 void ConversationController::free_response_audio()
 {
     if (response_mp3_data_ != nullptr)
     {
-        heap_caps_free(
-            response_mp3_data_
-        );
-
+        heap_caps_free(response_mp3_data_);
         response_mp3_data_ = nullptr;
     }
 
     response_mp3_size_ = 0;
 }
 
-
 void ConversationController::end_session()
 {
     session_active_ = false;
+    button_ready_ = false;
 
+    recorder_.stop();
     player_.stop();
-
     chat_api_client_.end_chat();
-
     free_response_audio();
 
     Serial.println();
-    Serial.println(
-        "[SESSION] Kisi ayrildi. Oturum kapandi."
-    );
+    Serial.println("[SESSION] Oturum kapandi.");
 }
-
 
 // =========================
 // IDLE
@@ -223,22 +218,65 @@ void ConversationController::end_session()
 
 void ConversationController::enter_idle()
 {
+    recorder_.pause_detection();
 }
-
 
 void ConversationController::update_idle()
 {
-    /*
-     * Aktif oturum varken kisi uzaklastiysa
-     * oturumu kapat.
-     */
+    if (INTERACTION_MODE == interaction_mode::push_to_talk)
+    {
+        update_idle_push_to_talk();
+        return;
+    }
+
+    update_idle_automatic_vad();
+}
+
+void ConversationController::update_idle_push_to_talk()
+{
+    if (cooldown_active())
+    {
+        return;
+    }
+
+    // HC-SR04 bu modda sadece yeni greeting tetikler. Session basladiktan
+    // sonra kisinin hala sensor onunde olup olmadigina bakilmaz.
+    if (!ultrasonic_armed_)
+    {
+        if (!ultrasonic_.person_present())
+        {
+            ultrasonic_armed_ = true;
+            Serial.println("[ULTRASONIC] Yeni gecis icin hazir.");
+        }
+
+        return;
+    }
+
+    if (!ultrasonic_.person_present())
+    {
+        return;
+    }
+
+    ultrasonic_armed_ = false;
+    session_active_ = true;
+
+    Serial.println();
+    Serial.println("================================");
+    Serial.println("[SESSION] Yeni gecis algilandi.");
+    Serial.println("================================");
+
+    change_state(conversation_state::greeting);
+}
+
+void ConversationController::update_idle_automatic_vad()
+{
+    // Stage 2.1 otomatik davranisi korunur.
     if (
         session_active_ &&
         !ultrasonic_.person_present()
     )
     {
         end_session();
-
         return;
     }
 
@@ -247,48 +285,28 @@ void ConversationController::update_idle()
         return;
     }
 
-    /*
-     * Zaten greeting yapilmis aktif bir kisi
-     * hala onumuzdeyse yeni tur baslat.
-     */
     if (session_active_)
     {
         if (ultrasonic_.person_present())
         {
-            change_state(
-                conversation_state::listening
-            );
+            change_state(conversation_state::listening);
         }
 
         return;
     }
 
-    /*
-     * Yeni kisi.
-     */
     if (ultrasonic_.person_present())
     {
         session_active_ = true;
 
         Serial.println();
-        Serial.println(
-            "================================"
-        );
+        Serial.println("================================");
+        Serial.println("[SESSION] Yeni kisi geldi.");
+        Serial.println("================================");
 
-        Serial.println(
-            "[SESSION] Yeni kisi geldi."
-        );
-
-        Serial.println(
-            "================================"
-        );
-
-        change_state(
-            conversation_state::greeting
-        );
+        change_state(conversation_state::greeting);
     }
 }
-
 
 // =========================
 // GREETING
@@ -296,42 +314,21 @@ void ConversationController::update_idle()
 
 void ConversationController::enter_greeting()
 {
-    // Mikrofon + AFE + VADNet sicak kalir; Recorder algilamayi
-    // DISARM eder. Boylece greeting sirasindaki VAD sonuclari
-    // kayit baslatamaz.
     if (!recorder_.pause_detection())
     {
-        Serial.println(
-            "HATA: Greeting oncesi algilama durdurulamadi."
-        );
+        Serial.println("HATA: Greeting oncesi algilama durdurulamadi.");
     }
 
-    Serial.println(
-        "[GREETING] Karsilama sesi caliyor..."
-    );
+    Serial.println("[GREETING] Karsilama sesi caliyor...");
 
-    if (
-        !player_.play_file(
-            GREETING_MP3_PATH
-        )
-    )
+    if (!player_.play_file(GREETING_MP3_PATH))
     {
-        Serial.println(
-            "HATA: greeting.mp3 calinamadi."
-        );
-
-        session_active_ = false;
-
-        start_cooldown(
-            COOLDOWN_AFTER_ERROR_MS
-        );
-
-        change_state(
-            conversation_state::idle
-        );
+        Serial.println("HATA: greeting.mp3 calinamadi.");
+        end_session();
+        start_cooldown(COOLDOWN_AFTER_ERROR_MS);
+        change_state(conversation_state::idle);
     }
 }
-
 
 void ConversationController::update_greeting()
 {
@@ -343,30 +340,92 @@ void ConversationController::update_greeting()
     }
 
     player_.stop();
+    Serial.println("[GREETING] Tamamlandi.");
 
-    Serial.println(
-        "[GREETING] Tamamlandi."
-    );
+    if (INTERACTION_MODE == interaction_mode::push_to_talk)
+    {
+        // PTT modunda ultrasonic sadece greeting tetikleyicisidir.
+        change_state(conversation_state::waiting_button);
+        return;
+    }
 
+    // Stage 2.1 otomatik yolu aynen korunur.
     if (!ultrasonic_.person_present())
     {
         end_session();
+        change_state(conversation_state::idle);
+        return;
+    }
 
-        change_state(
-            conversation_state::idle
-        );
+    change_state(conversation_state::listening);
+}
+
+// =========================
+// PUSH-TO-TALK WAIT
+// =========================
+
+void ConversationController::enter_waiting_button()
+{
+    recorder_.pause_detection();
+
+    // State degisimi ile ayni anda gerceklesen button release, debounce
+    // tamamlanmadan once stable_pressed_ icinde kisa sure eski degeri
+    // tasiyabilir. Bu nedenle burada aninda "butonu birak" demiyoruz.
+    // Once stabil release gorulmesini bekliyoruz.
+    button_ready_ = false;
+    release_notice_shown_ = false;
+
+    Serial.println();
+    Serial.println("[BAS-KONUS] BASILI TUT VE KONUS.");
+}
+
+void ConversationController::update_waiting_button()
+{
+    if (cooldown_active())
+    {
+        return;
+    }
+
+    if (millis() - state_started_ms_ >= PTT_WAIT_TIMEOUT_MS)
+    {
+        Serial.println("[BAS-KONUS] Zaman asimi; oturum kapaniyor.");
+        end_session();
+        change_state(conversation_state::idle);
+        return;
+    }
+
+    if (!button_ready_)
+    {
+        if (!talk_button_.is_pressed())
+        {
+            button_ready_ = true;
+            Serial.println("[BAS-KONUS] Buton hazir.");
+            return;
+        }
+
+        if (
+            !release_notice_shown_ &&
+            millis() - state_started_ms_ >= PTT_RELEASE_NOTICE_DELAY_MS
+        )
+        {
+            release_notice_shown_ = true;
+            Serial.println("[BAS-KONUS] Once butonu birak.");
+        }
 
         return;
     }
 
-    change_state(
-        conversation_state::listening
-    );
+    if (!talk_button_.just_pressed())
+    {
+        return;
+    }
+
+    manual_pressed_started_ms_ = millis();
+    change_state(conversation_state::manual_recording);
 }
 
-
 // =========================
-// LISTENING
+// AUTOMATIC VAD LISTENING
 // =========================
 
 void ConversationController::enter_listening()
@@ -374,90 +433,155 @@ void ConversationController::enter_listening()
     if (!ultrasonic_.person_present())
     {
         end_session();
-
-        change_state(
-            conversation_state::idle
-        );
-
+        change_state(conversation_state::idle);
         return;
     }
 
     if (!recorder_.start_listening())
     {
-        Serial.println(
-            "HATA: Mikrofon dinleme baslatilamadi."
-        );
-
-        start_cooldown(
-            COOLDOWN_AFTER_ERROR_MS
-        );
-
-        change_state(
-            conversation_state::idle
-        );
-
+        Serial.println("HATA: Mikrofon dinleme baslatilamadi.");
+        start_cooldown(COOLDOWN_AFTER_ERROR_MS);
+        change_state(conversation_state::idle);
         return;
     }
 
-    Serial.println(
-        "[LISTENING] Dursun Emice dinliyor."
-    );
+    Serial.println("[LISTENING] Dursun Emice dinliyor.");
 }
-
 
 void ConversationController::update_listening()
 {
-    /*
-     * Kisi konusmadan giderse hiçbir sey
-     * sunucuya gondermiyoruz.
-     */
     if (!ultrasonic_.person_present())
     {
         recorder_.stop();
-
         end_session();
-
-        change_state(
-            conversation_state::idle
-        );
-
+        change_state(conversation_state::idle);
         return;
     }
 
-    /*
-     * Her loop'ta kucuk bir ses blogu
-     * isle.
-     */
     recorder_.update();
 
-    /*
-     * Henuz anlamli bir konusma yok.
-     *
-     * Burada sonsuza kadar sessizce
-     * bekleyebilir.
-     */
     if (!recorder_.has_recording())
     {
         return;
     }
 
-    Serial.print(
-        "[LISTENING] Anlamli konusma hazir: "
-    );
+    Serial.print("[LISTENING] Anlamli konusma hazir: ");
+    Serial.print(recorder_.wav_size());
+    Serial.println(" byte");
 
-    Serial.print(
-        recorder_.wav_size()
-    );
-
-    Serial.println(
-        " byte"
-    );
-
-    change_state(
-        conversation_state::waiting_server
-    );
+    change_state(conversation_state::waiting_server);
 }
 
+// =========================
+// MANUAL PUSH-TO-TALK RECORDING
+// =========================
+
+void ConversationController::enter_manual_recording()
+{
+    if (!recorder_.start_manual_recording())
+    {
+        Serial.println("HATA: Bas-konuş kaydi baslatilamadi.");
+        end_session();
+        start_cooldown(COOLDOWN_AFTER_ERROR_MS);
+        change_state(conversation_state::idle);
+        return;
+    }
+
+    Serial.println("[BAS-KONUS] KAYIT: butonu basili tut.");
+}
+
+void ConversationController::update_manual_recording()
+{
+    recorder_.update();
+
+    // Recorder maksimum sure veya dolu buffer nedeniyle kendisi bitirebilir.
+    if (recorder_.has_recording())
+    {
+        Serial.println("[BAS-KONUS] Maksimum kayit suresine ulasildi.");
+        change_state(conversation_state::waiting_server);
+        return;
+    }
+
+    // Manuel kayit maksimum sure/buffer nedeniyle sonlanmis fakat VADNet
+    // hic konusma gormemisse Recorder kaydi READY yapmak yerine atar.
+    if (!recorder_.is_recording())
+    {
+        Serial.println("[BAS-KONUS] Gecerli konusma yok; tekrar deneyebilirsin.");
+        change_state(conversation_state::waiting_button);
+        return;
+    }
+
+    if (!talk_button_.just_released())
+    {
+        return;
+    }
+
+    const uint32_t held_ms = millis() - manual_pressed_started_ms_;
+
+    if (held_ms < PTT_MIN_HOLD_MS)
+    {
+        Serial.println("[BAS-KONUS] Cok kisa basildi; kayit iptal.");
+        recorder_.stop();
+        change_state(conversation_state::waiting_button);
+        return;
+    }
+
+    Serial.print("[BAS-KONUS] Buton birakildi. Son ");
+    Serial.print(PTT_RELEASE_TAIL_MS);
+    Serial.println(" ms aliniyor...");
+
+    change_state(conversation_state::release_tail);
+}
+
+void ConversationController::enter_release_tail()
+{
+    // Recorder manuel RECORDING durumunda kalir. Son hece icin kisa kuyruk.
+}
+
+void ConversationController::update_release_tail()
+{
+    recorder_.update();
+
+    if (recorder_.has_recording())
+    {
+        change_state(conversation_state::waiting_server);
+        return;
+    }
+
+    if (!recorder_.is_recording())
+    {
+        Serial.println("[BAS-KONUS] Gecerli konusma yok; sunucuya gonderilmedi.");
+        change_state(conversation_state::waiting_button);
+        return;
+    }
+
+    if (millis() - state_started_ms_ < PTT_RELEASE_TAIL_MS)
+    {
+        return;
+    }
+
+    if (!recorder_.finish_manual_recording())
+    {
+        if (!recorder_.manual_speech_detected())
+        {
+            Serial.println("[BAS-KONUS] Konusma algilanmadi; sunucuya gonderilmedi.");
+        }
+        else
+        {
+            Serial.println("HATA: Bas-konuş kaydi sonlandirilamadi.");
+        }
+
+        recorder_.stop();
+        change_state(conversation_state::waiting_button);
+        return;
+    }
+
+    Serial.print("[BAS-KONUS] WAV hazir: ");
+    Serial.print(recorder_.wav_size());
+    Serial.println(" byte");
+
+    change_state(conversation_state::waiting_server);
+}
 
 // =========================
 // WAITING SERVER
@@ -467,136 +591,86 @@ bool ConversationController::download_response_to_psram()
 {
     free_response_audio();
 
-    const int content_length =
-        chat_api_client_.content_length();
+    const int content_length = chat_api_client_.content_length();
 
     if (content_length <= 0)
     {
-        Serial.println(
-            "HATA: Gecersiz MP3 Content-Length."
-        );
-
+        Serial.println("HATA: Gecersiz MP3 Content-Length.");
         chat_api_client_.end_chat();
-
         return false;
     }
 
-    if (
-        static_cast<size_t>(content_length) >
-        MAX_RESPONSE_MP3_BYTES
-    )
+    if (static_cast<size_t>(content_length) > MAX_RESPONSE_MP3_BYTES)
     {
-        Serial.print(
-            "HATA: MP3 fazla buyuk: "
-        );
-
+        Serial.print("HATA: MP3 fazla buyuk: ");
         Serial.println(content_length);
-
         chat_api_client_.end_chat();
-
         return false;
     }
 
-    Stream* stream =
-        chat_api_client_.get_stream();
+    Stream* stream = chat_api_client_.get_stream();
 
     if (stream == nullptr)
     {
-        Serial.println(
-            "HATA: MP3 stream alinamadi."
-        );
-
+        Serial.println("HATA: MP3 stream alinamadi.");
         chat_api_client_.end_chat();
-
         return false;
     }
 
-    response_mp3_data_ =
-        static_cast<uint8_t*>(
-            heap_caps_malloc(
-                static_cast<size_t>(
-                    content_length
-                ),
-                MALLOC_CAP_SPIRAM |
-                MALLOC_CAP_8BIT
-            )
-        );
+    response_mp3_data_ = static_cast<uint8_t*>(
+        heap_caps_malloc(
+            static_cast<size_t>(content_length),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        )
+    );
 
     if (response_mp3_data_ == nullptr)
     {
-        Serial.println(
-            "HATA: Response icin PSRAM ayrilamadi."
-        );
-
+        Serial.println("HATA: Response icin PSRAM ayrilamadi.");
         chat_api_client_.end_chat();
-
         return false;
     }
 
-    const size_t expected_size =
-        static_cast<size_t>(
-            content_length
-        );
-
+    const size_t expected_size = static_cast<size_t>(content_length);
     size_t received_size = 0;
-
-    uint32_t last_progress_ms =
-        millis();
+    uint32_t last_progress_ms = millis();
 
     while (received_size < expected_size)
     {
-        const int available_bytes =
-            stream->available();
+        const int available_bytes = stream->available();
 
         if (available_bytes <= 0)
         {
-            if (
-                millis() - last_progress_ms >
-                RESPONSE_STREAM_STALL_TIMEOUT_MS
-            )
+            if (millis() - last_progress_ms > RESPONSE_STREAM_STALL_TIMEOUT_MS)
             {
-                Serial.println(
-                    "HATA: MP3 indirme timeout."
-                );
-
+                Serial.println("HATA: MP3 indirme timeout.");
                 chat_api_client_.end_chat();
-
                 free_response_audio();
-
                 return false;
             }
 
             delay(2);
-
             continue;
         }
 
-        size_t read_size =
-            static_cast<size_t>(
-                available_bytes
-            );
+        size_t read_size = static_cast<size_t>(available_bytes);
 
         if (read_size > DOWNLOAD_BUFFER_SIZE)
         {
-            read_size =
-                DOWNLOAD_BUFFER_SIZE;
+            read_size = DOWNLOAD_BUFFER_SIZE;
         }
 
-        const size_t remaining =
-            expected_size -
-            received_size;
+        const size_t remaining = expected_size - received_size;
 
         if (read_size > remaining)
         {
             read_size = remaining;
         }
 
-        const size_t bytes_read =
-            stream->readBytes(
-                response_mp3_data_ +
-                    received_size,
-                read_size
-            );
+        const size_t bytes_read = stream->readBytes(
+            response_mp3_data_ + received_size,
+            read_size
+        );
 
         if (bytes_read == 0)
         {
@@ -604,101 +678,64 @@ bool ConversationController::download_response_to_psram()
         }
 
         received_size += bytes_read;
-
         last_progress_ms = millis();
     }
 
     chat_api_client_.end_chat();
+    response_mp3_size_ = received_size;
 
-    response_mp3_size_ =
-        received_size;
-
-    Serial.print(
-        "[SERVER] MP3 PSRAM'e alindi: "
-    );
-
-    Serial.print(
-        response_mp3_size_
-    );
-
+    Serial.print("[SERVER] MP3 PSRAM'e alindi: ");
+    Serial.print(response_mp3_size_);
     Serial.println(" byte");
 
     return true;
 }
 
-
 void ConversationController::enter_waiting_server()
 {
-    if (WiFi.status() != WL_CONNECTED)
+    if (
+        WiFi.status() != WL_CONNECTED ||
+        WiFi.localIP() == IPAddress(0, 0, 0, 0)
+    )
     {
-        Serial.println(
-            "HATA: WiFi bagli degil."
-        );
-
-        start_cooldown(
-            COOLDOWN_AFTER_ERROR_MS
-        );
-
-        change_state(
-            conversation_state::idle
-        );
-
+        Serial.println("HATA: WiFi/IP hazir degil.");
+        end_session();
+        start_cooldown(COOLDOWN_AFTER_ERROR_MS);
+        change_state(conversation_state::idle);
         return;
     }
 
-    Serial.println(
-        "[SERVER] Ses gonderiliyor..."
-    );
+    Serial.println("[SERVER] Ses gonderiliyor...");
 
-    const bool started =
-        chat_api_client_.begin_chat(
-            recorder_.wav_data(),
-            recorder_.wav_size()
-        );
+    const bool started = chat_api_client_.begin_chat(
+        recorder_.wav_data(),
+        recorder_.wav_size()
+    );
 
     if (!started)
     {
-        Serial.println(
-            "HATA: Sunucu cevabi alinamadi."
-        );
-
-        start_cooldown(
-            COOLDOWN_AFTER_ERROR_MS
-        );
-
-        change_state(
-            conversation_state::idle
-        );
-
+        Serial.println("HATA: Sunucu cevabi alinamadi.");
+        end_session();
+        start_cooldown(COOLDOWN_AFTER_ERROR_MS);
+        change_state(conversation_state::idle);
         return;
     }
 
     if (!download_response_to_psram())
     {
-        start_cooldown(
-            COOLDOWN_AFTER_ERROR_MS
-        );
-
-        change_state(
-            conversation_state::idle
-        );
-
+        end_session();
+        start_cooldown(COOLDOWN_AFTER_ERROR_MS);
+        change_state(conversation_state::idle);
         return;
     }
 
-    change_state(
-        conversation_state::playing_response
-    );
+    change_state(conversation_state::playing_response);
 }
-
 
 void ConversationController::update_waiting_server()
 {
-    /*
-     * HTTP istegi su an senkron/bloklayici.
-     */
+    // HTTP istegi su an senkron/bloklayici.
 }
-
 
 // =========================
 // PLAYING RESPONSE
@@ -706,42 +743,22 @@ void ConversationController::update_waiting_server()
 
 void ConversationController::enter_playing_response()
 {
-    // Dursun kendi TTS cevabini calarken Recorder DISARM edilir.
-    // AFE pipeline sicak kalir; playback VAD sonucu kayda donusemez.
     if (!recorder_.pause_detection())
     {
-        Serial.println(
-            "HATA: Response oncesi algilama durdurulamadi."
-        );
+        Serial.println("HATA: Response oncesi algilama durdurulamadi.");
     }
 
-    Serial.println(
-        "[RESPONSE] Dursun Emice konusuyor..."
-    );
+    Serial.println("[RESPONSE] Dursun Emice konusuyor...");
 
-    if (
-        !player_.play_memory(
-            response_mp3_data_,
-            response_mp3_size_
-        )
-    )
+    if (!player_.play_memory(response_mp3_data_, response_mp3_size_))
     {
-        Serial.println(
-            "HATA: Response MP3 baslatilamadi."
-        );
-
+        Serial.println("HATA: Response MP3 baslatilamadi.");
         free_response_audio();
-
-        start_cooldown(
-            COOLDOWN_AFTER_ERROR_MS
-        );
-
-        change_state(
-            conversation_state::idle
-        );
+        end_session();
+        start_cooldown(COOLDOWN_AFTER_ERROR_MS);
+        change_state(conversation_state::idle);
     }
 }
-
 
 void ConversationController::update_playing_response()
 {
@@ -752,23 +769,25 @@ void ConversationController::update_playing_response()
         return;
     }
 
-    /*
-     * Player source'u artik kullanmiyor.
-     * Buffer guvenle serbest birakilabilir.
-     */
     player_.stop();
-
     free_response_audio();
 
-    Serial.println(
-        "[RESPONSE] Konusma tamamlandi."
-    );
+    Serial.println("[RESPONSE] Konusma tamamlandi.");
 
-    start_cooldown(
-        COOLDOWN_AFTER_CHAT_MS
-    );
+    start_cooldown(COOLDOWN_AFTER_CHAT_MS);
+    continue_after_playback();
+}
 
-    change_state(
-        conversation_state::idle
-    );
+void ConversationController::continue_after_playback()
+{
+    if (INTERACTION_MODE == interaction_mode::push_to_talk)
+    {
+        // PTT modunda ultrasonic artik session'i yonetmez. Kullanici yeni
+        // soru icin tekrar butona basar; timeout olursa session kapanir.
+        change_state(conversation_state::waiting_button);
+        return;
+    }
+
+    // Stage 2.1 otomatik davranisi.
+    change_state(conversation_state::idle);
 }

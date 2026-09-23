@@ -4,6 +4,16 @@
 #include <cstdint>
 
 #include "secrets.h"
+#include "interaction_mode.h"
+
+
+// =========================
+// Wi-Fi reliability
+// =========================
+
+constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
+constexpr uint32_t WIFI_IP_TIMEOUT_MS = 5000;
+constexpr uint32_t WIFI_RECONNECT_INTERVAL_MS = 5000;
 
 // =========================
 // Server
@@ -47,6 +57,43 @@ constexpr uint32_t ULTRASONIC_SAMPLE_INTERVAL_MS = 200;
 constexpr uint32_t ULTRASONIC_ECHO_TIMEOUT_US = 6000;
 
 constexpr uint8_t ULTRASONIC_CONFIRM_SAMPLES = 2;
+
+
+// =========================
+// Interaction mode
+// =========================
+
+// V1: kullanici butona basili tutarken kayit yapilir.
+// Ileride buton kaldirilmak istenirse sadece bu satir
+// interaction_mode::automatic_vad olarak degistirilebilir;
+// ESP-SR / VAD / pre-roll ayarlari aynen korunur.
+constexpr interaction_mode INTERACTION_MODE =
+    interaction_mode::push_to_talk;
+
+// =========================
+// Push-to-talk button
+// =========================
+
+// Normalde acik (NO) buton:
+// GPIO4 --- BUTON --- GND
+// Dahili INPUT_PULLUP kullanilir.
+constexpr int TALK_BUTTON_PIN = 4;
+constexpr uint32_t TALK_BUTTON_DEBOUNCE_MS = 30;
+constexpr uint32_t PTT_RELEASE_NOTICE_DELAY_MS = 500;
+
+// Kullanici butonu biraktiktan sonra son heceyi kesmemek icin.
+constexpr uint32_t PTT_RELEASE_TAIL_MS = 250;
+
+// Greeting veya Dursun cevabi bittikten sonra yeni bir bas-konuş
+// gelmezse V1 oturumu kapanir.
+constexpr uint32_t PTT_WAIT_TIMEOUT_MS = 15000;
+
+// Yanlislikla yapilan cok kisa dokunuslari sunucuya gonderme.
+constexpr uint32_t PTT_MIN_HOLD_MS = 250;
+
+// Bas-konuş kaydinda VADNet hic gercek konusma gormediyse
+// WAV sunucuya gonderilmez. VAD kaydin baslangic/bitisini yonetmez.
+constexpr bool PTT_REQUIRE_VAD_SPEECH = true;
 
 // =========================
 // Audio format
